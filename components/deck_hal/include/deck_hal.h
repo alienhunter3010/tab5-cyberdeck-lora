@@ -71,6 +71,25 @@ void *hal_tab5_sys_i2c(void);
  * Remembered and re-applied whenever the keyboard is (re)attached. */
 void hal_kbd_light(uint8_t brightness, bool use_color, uint32_t rgb);
 
+/* ---- M5-Bus serial (plug-in modules: LoRaWAN-EU868, GPS, ...) -------------- */
+
+/* The Tab5 routes two UARTs to the M5-Bus: UART1 on pins 15/16 (RX G7, TX G6)
+ * and UART0 on pins 13/14 (RX G38, TX G37). Module DIP switches pick which pair
+ * the module listens on. `swap` exchanges RX and TX for modules whose RX/TX
+ * labels are written from the module's side. */
+typedef enum { HAL_MBUS_UART1 = 0, HAL_MBUS_UART0 = 1 } hal_mbus_uart_t;
+
+bool hal_mbus_power(bool on);                    /* 5 V on the M5-Bus (EXT5V_EN) */
+bool hal_mbus_uart_open(hal_mbus_uart_t which, bool swap, uint32_t baud);
+void hal_mbus_uart_close(void);
+bool hal_mbus_uart_is_open(void);
+int  hal_mbus_uart_read(uint8_t *buf, size_t n);          /* non-blocking, bytes read */
+int  hal_mbus_uart_write(const uint8_t *buf, size_t n);   /* bytes written, < 0 on error */
+void hal_mbus_uart_flush(void);                           /* drop unread input */
+void hal_mbus_reset_pulse(void);                          /* pulse M5-Bus pin 8 (G45) low: module RST when its DIP picks pin 8 */
+/* "RX G7 / TX G6  (M5-BUS 15/16)" for the screen. */
+const char *hal_mbus_uart_describe(hal_mbus_uart_t which, bool swap);
+
 /* ---- Power --------------------------------------------------------------- */
 
 typedef struct {

@@ -17,6 +17,8 @@ Seven modules: TERMINAL (SSH and Ollama chat), NOTES (markdown), CALC, WEATHER, 
 (music), FILES (file manager and LAN portal) and SYSTEM. It updates itself over
 Wi-Fi with signed builds and tells you when a new one is out.
 
+**LORA (WIRELESS group):** the M5Stack Module LoRaWAN-EU868 on the M5-Bus, with the module's stock RUI3 AT firmware. LINK finds the module (it tries both M5-Bus UART pairs, straight and swapped, until one answers) and switches it between LoRa P2P and LoRaWAN; P2P is a chat log and text field between two modules, with the radio parameters and a one hour airtime budget that enforces the EU868 duty cycle; LORAWAN takes OTAA keys, joins, sends uplinks (confirmed or not) and lists downlinks. The module's DIP switches must put TX/RX on M5-Bus pins 15/16 or 13/14 and RST on pin 8. Host tests: `cmake --build sim/build --target lora_test lora_flow_test && sim/build/lora_test && sim/build/lora_flow_test`. Meshtastic needs different firmware on the module and is not part of this.
+
 **Next (on main): NET TOOLS.** The NET TOOLS tile became a **WIRELESS**
 group holding NET TOOLS, the Tab5's own radio as a toolkit, and RF WATCH, a
 placeholder for the RF Sentinel M5-Bus board. NET TOOLS has four tabs: **SCAN**

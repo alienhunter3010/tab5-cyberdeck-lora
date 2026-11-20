@@ -58,6 +58,8 @@ file(GLOB APP_DIRS LIST_DIRECTORIES true "${ROOT}/apps/*")
 add_executable(deck_sim
     main.c
     hal_sim.c
+    lora_sim.c
+    ${ROOT}/components/deck_lora/lora_at.c
     net_sim.c
     ${ROOT}/components/deck_net/net_tools.c
     ota_sim.c
@@ -107,6 +109,7 @@ target_include_directories(deck_sim PRIVATE
     ${ROOT}/components/deck_audio/include
     ${ROOT}/components/deck_audio
     ${ROOT}/components/deck_sync/include
+    ${ROOT}/components/deck_lora/include
     ${ROOT}/components/minimp3
     ${ROOT}/components/md4c
     ${APP_DIRS}
@@ -139,3 +142,15 @@ target_include_directories(weather_test PRIVATE ${ROOT}/apps/app_weather ${ROOT}
 target_compile_definitions(weather_test PRIVATE FIXTURES="${CMAKE_CURRENT_SOURCE_DIR}/fixtures")
 target_link_libraries(weather_test PRIVATE cjson m)
 add_test(NAME weather_data COMMAND weather_test)
+
+# Host test for the RUI3 AT link, event parser, airtime and duty cycle.
+add_executable(lora_test ${ROOT}/components/deck_lora/test_lora.c ${ROOT}/components/deck_lora/lora_at.c)
+target_include_directories(lora_test PRIVATE ${ROOT}/components/deck_lora/include)
+target_link_libraries(lora_test PRIVATE m)
+add_test(NAME lora_at COMMAND lora_test)
+
+# End-to-end: the AT link against the simulator's fake RAK3172 (lora_sim.c).
+add_executable(lora_flow_test lora_flow_test.c lora_sim.c ${ROOT}/components/deck_lora/lora_at.c)
+target_include_directories(lora_flow_test PRIVATE ${ROOT}/components/deck_lora/include ${ROOT}/components/deck_hal/include)
+target_link_libraries(lora_flow_test PRIVATE m)
+add_test(NAME lora_flow COMMAND lora_flow_test)

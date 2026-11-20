@@ -37,6 +37,9 @@
 #include "m5_tab5_keyboard.h"
 #include "m5tab5_extio_pi4ioe5v6408.h"
 #include "driver/i2c_master.h"
+#include "driver/gpio.h"
+#include "driver/uart.h"
+#include "m5tab5_pinmap.h"
 
 static const char *TAG = "hal";
 
@@ -484,6 +487,97 @@ bool hal_headphones(void)
         return false;
     }
     return level; /* HP_DET reads high with a plug in the jack */
+}
+
+/* ---- M5-Bus serial -------------------------------------------------------- */
+
+static bool s_mbus_open;
+static uart_port_t s_mbus_port;
+
+bool hal_mbus_power(bool on)
+{
+    return s_board.ext5v_enable(on) == ESP_OK;
+}
+
+static void mbus_pins(hal_mbus_uart_t which, bool swap, int *rx, int *tx)
+{
+    using namespace m5::tab5;
+    int r = which == HAL_MBUS_UART0 ? (int)M5TAB5_MBUS_UART0_RX : (int)M5TAB5_MBUS_UART1_RX;
+    int t = which == HAL_MBUS_UART0 ? (int)M5TAB5_MBUS_UART0_TX : (int)M5TAB5_MBUS_UART1_TX;
+    *rx   = swap ? t : r;
+    *tx   = swap ? r : t;
+}
+
+bool hal_mbus_uart_open(hal_mbus_uart_t which, bool swap, uint32_t baud)
+{
+    hal_mbus_uart_close();
+    int rx, tx;
+    mbus_pins(which, swap, &rx, &tx);
+    /* Any UART can reach any GPIO; UART_NUM_0 is left alone. */
+    uart_port_t port = which == HAL_MBUS_UART0 ? UART_NUM_2 : UART_NUM_1;
+    uart_config_t cfg = {};
+    cfg.baud_rate  = (int)baud;
+    cfg.data_bits  = UART_DATA_8_BITS;
+    cfg.parity     = UART_PARITY_DISABLE;
+    cfg.stop_bits  = UART_STOP_BITS_1;
+    cfg.flow_ctrl  = UART_HW_FLOWCTRL_DISABLE;
+    cfg.source_clk = UART_SCLK_DEFAULT;
+    if (uart_driver_install(port, 2048, 0, 0, nullptr, 0) != ESP_OK) return false;
+    if (uart_param_config(port, &cfg) != ESP_OK ||
+        uart_set_pin(port, tx, rx, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE) != ESP_OK) {
+        uart_driver_delete(port);
+        return false;
+    }
+    s_mbus_port = port;
+    s_mbus_open = true;
+    ESP_LOGI(TAG, "M5-Bus UART%d open: RX G%d TX G%d @ %u", (int)port, rx, tx, (unsigned)baud);
+    return true;
+}
+
+void hal_mbus_uart_close(void)
+{
+    if (!s_mbus_open) return;
+    uart_driver_delete(s_mbus_port);
+    s_mbus_open = false;
+}
+
+bool hal_mbus_uart_is_open(void) { return s_mbus_open; }
+
+int hal_mbus_uart_read(uint8_t *buf, size_t n)
+{
+    if (!s_mbus_open) return 0;
+    return uart_read_bytes(s_mbus_port, buf, (uint32_t)n, 0);
+}
+
+int hal_mbus_uart_write(const uint8_t *buf, size_t n)
+{
+    if (!s_mbus_open) return -1;
+    return uart_write_bytes(s_mbus_port, buf, n);
+}
+
+void hal_mbus_uart_flush(void)
+{
+    if (s_mbus_open) uart_flush_input(s_mbus_port);
+}
+
+void hal_mbus_reset_pulse(void)
+{
+    /* M5-Bus pin 8 is G45. Drive low briefly, then let go: the module pulls RST up itself. */
+    const gpio_num_t pin = m5::tab5::M5TAB5_MBUS_PIN8;
+    gpio_reset_pin(pin);
+    gpio_set_direction(pin, GPIO_MODE_OUTPUT);
+    gpio_set_level(pin, 0);
+    vTaskDelay(pdMS_TO_TICKS(30));
+    gpio_set_direction(pin, GPIO_MODE_INPUT);
+}
+
+const char *hal_mbus_uart_describe(hal_mbus_uart_t which, bool swap)
+{
+    static char buf[48];
+    int rx, tx;
+    mbus_pins(which, swap, &rx, &tx);
+    snprintf(buf, sizeof(buf), "RX G%d / TX G%d  (M5-BUS %s)", rx, tx, which == HAL_MBUS_UART0 ? "13/14" : "15/16");
+    return buf;
 }
 
 /* ---- Settings ------------------------------------------------------------ */

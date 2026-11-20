@@ -6,6 +6,8 @@ idf_component_register(
         m5_tab5_component
         m5_tab5_keyboard_component
         esp_driver_ledc
+        esp_driver_uart
+        esp_driver_gpio
         esp_driver_sdmmc
         sdmmc
         fatfs
