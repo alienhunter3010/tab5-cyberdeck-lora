@@ -73,22 +73,20 @@ void hal_kbd_light(uint8_t brightness, bool use_color, uint32_t rgb);
 
 /* ---- M5-Bus serial (plug-in modules: LoRaWAN-EU868, GPS, ...) -------------- */
 
-/* The Tab5 routes two UARTs to the M5-Bus: UART1 on pins 15/16 (RX G7, TX G6)
- * and UART0 on pins 13/14 (RX G38, TX G37). Module DIP switches pick which pair
- * the module listens on. `swap` exchanges RX and TX for modules whose RX/TX
- * labels are written from the module's side. */
-typedef enum { HAL_MBUS_UART1 = 0, HAL_MBUS_UART0 = 1 } hal_mbus_uart_t;
-
+/* Any two GPIOs can be a UART. The M5-Bus brings out G38/G37 (pins 13/14, the
+ * "UART0" pair), G7/G6 (pins 15/16, the "PC" pair) and free GPIOs G16, G51,
+ * G2, G47, G35 (pins 2, 26, 21, 23, 24); a module's DIP switches decide which
+ * of them carry its RX and TX. `tx_gpio` is the Tab5's transmit pin. */
 bool hal_mbus_power(bool on);                    /* 5 V on the M5-Bus (EXT5V_EN) */
-bool hal_mbus_uart_open(hal_mbus_uart_t which, bool swap, uint32_t baud);
+bool hal_mbus_uart_open(int tx_gpio, int rx_gpio, uint32_t baud);
 void hal_mbus_uart_close(void);
 bool hal_mbus_uart_is_open(void);
 int  hal_mbus_uart_read(uint8_t *buf, size_t n);          /* non-blocking, bytes read */
 int  hal_mbus_uart_write(const uint8_t *buf, size_t n);   /* bytes written, < 0 on error */
 void hal_mbus_uart_flush(void);                           /* drop unread input */
 void hal_mbus_reset_pulse(void);                          /* pulse M5-Bus pin 8 (G45) low: module RST when its DIP picks pin 8 */
-/* "RX G7 / TX G6  (M5-BUS 15/16)" for the screen. */
-const char *hal_mbus_uart_describe(hal_mbus_uart_t which, bool swap);
+/* "TX G7 pin15 / RX G6 pin16" for the screen. */
+const char *hal_mbus_pins_describe(int tx_gpio, int rx_gpio);
 
 /* ---- Power --------------------------------------------------------------- */
 

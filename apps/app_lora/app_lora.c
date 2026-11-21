@@ -77,7 +77,7 @@ static lora_duty_t s_duty;
 static bool s_duty_ready;
 
 static struct {
-    int uart, swap;
+    int tx, rx; /* the Tab5's TX and RX GPIOs that reached the module last time */
     int freq, sf, bw, cr, pwr, port, cfm;
     char deveui[17], appeui[17], appkey[33];
 } s_cfg;
@@ -97,8 +97,8 @@ static void log_add(log_t *l, int kind, int rssi, int snr, const char *text)
 
 static void cfg_load(void)
 {
-    s_cfg.uart = hal_cfg_get_i32("lr_uart", 0) ? 1 : 0;
-    s_cfg.swap = hal_cfg_get_i32("lr_swap", 0) ? 1 : 0;
+    s_cfg.tx   = hal_cfg_get_i32("lr_tx", 6);
+    s_cfg.rx   = hal_cfg_get_i32("lr_rx", 7);
     s_cfg.freq = hal_cfg_get_i32("lr_freq", 0);
     s_cfg.sf   = hal_cfg_get_i32("lr_sf", 7);
     s_cfg.bw   = hal_cfg_get_i32("lr_bw", 0);
@@ -129,6 +129,55 @@ static void cfg_save_radio(void)
     hal_cfg_set_i32("lr_cfm", s_cfg.cfm);
 }
 
+/* ---- Which M5-Bus pins carry the module's UART --------------------------------
+ * The module's DIP switches put its RX on bus pin 2, 13, 15 or 26 and its TX on
+ * pin 14, 16, 21, 23 or 24; the doc does not say whether those labels are the
+ * module's or the host's side, so both readings are tried. Pairs are Tab5 GPIOs:
+ * pin 2 = G16, 13 = G38, 15 = G7, 26 = G51; 14 = G37, 16 = G6, 21 = G2, 23 = G47, 24 = G35.
+ * The first four are the usual suspects and make up the quick scan. */
+#define QUICK_N 4
+#define N_PAIRS 40
+
+typedef struct {
+    int8_t tx, rx;
+} pair_t;
+
+static pair_t s_pairs[N_PAIRS];
+
+static bool pair_has(int n, int tx, int rx)
+{
+    for (int i = 0; i < n; i++)
+        if (s_pairs[i].tx == tx && s_pairs[i].rx == rx) return true;
+    return false;
+}
+
+static void pairs_init(void)
+{
+    static bool done;
+    if (done) return;
+    done = true;
+    static const int8_t SET_A[] = {7, 38, 16, 51};        /* bus pins 15, 13, 2, 26 */
+    static const int8_t SET_B[] = {6, 37, 2, 47, 35};     /* bus pins 16, 14, 21, 23, 24 */
+    int n = 0;
+    s_pairs[n++] = (pair_t){6, 7};
+    s_pairs[n++] = (pair_t){7, 6};
+    s_pairs[n++] = (pair_t){37, 38};
+    s_pairs[n++] = (pair_t){38, 37};
+    for (int i = 0; i < 4; i++)
+        for (int j = 0; j < 5; j++)
+            if (!pair_has(n, SET_A[i], SET_B[j])) s_pairs[n++] = (pair_t){SET_A[i], SET_B[j]}; /* module RX on A, TX on B */
+    for (int i = 0; i < 4; i++)
+        for (int j = 0; j < 5; j++)
+            if (!pair_has(n, SET_B[j], SET_A[i])) s_pairs[n++] = (pair_t){SET_B[j], SET_A[i]}; /* the other reading */
+}
+
+static int pair_index(int tx, int rx)
+{
+    for (int i = 0; i < N_PAIRS; i++)
+        if (s_pairs[i].tx == tx && s_pairs[i].rx == rx) return i;
+    return 0;
+}
+
 /* ---- UI state -------------------------------------------------------------------- */
 
 static struct {
@@ -141,8 +190,10 @@ static struct {
     /* link and bring-up */
     lora_link_t *link;
     phase_t phase;
-    int combo;     /* 0..3 = uart * 2 + swap, currently open */
-    int combos_left;
+    int pair;       /* index into s_pairs, currently open */
+    int scan_n;     /* pairs in this scan: QUICK_N or N_PAIRS */
+    int pairs_left;
+    int attempts;   /* tries per pair */
     int attempt;
     char ver[40];
     int mode;      /* 0 P2P, 1 LoRaWAN, -1 unknown */
@@ -195,35 +246,35 @@ static void sanitize(const uint8_t *in, size_t n, char *out, size_t out_n)
     out[o] = 0;
 }
 
-static int combo_uart(int c) { return c >> 1; }
-static int combo_swap(int c) { return c & 1; }
-
-static void open_combo(int c)
+static void open_pair(void)
 {
-    s_ui.combo = c;
-    hal_mbus_uart_open(combo_uart(c) ? HAL_MBUS_UART0 : HAL_MBUS_UART1, combo_swap(c) != 0, BAUD);
+    hal_mbus_uart_open(s_pairs[s_ui.pair].tx, s_pairs[s_ui.pair].rx, BAUD);
     hal_mbus_uart_flush();
 }
 
 static void probe_send(void)
 {
     s_ui.phase = PH_PROBING;
-    cmd("AT", 800, 0, T_PROBE);
+    cmd("AT", 700, 0, T_PROBE);
     render_link();
 }
 
-/* Open the saved UART choice (or, with `scan`, walk all four) and ask "AT". */
-static void probe_begin(bool scan)
+/* Ask "AT" on the saved pins first, then walk the other pairs: the quick four, or with `deep` all of them. */
+static void probe_begin(bool deep)
 {
     if (!s_ui.link) return;
     lora_link_flush(s_ui.link);
-    s_ui.combos_left = scan ? 4 : 1;
-    s_ui.attempt     = 0;
-    s_ui.mode        = -1;
-    s_ui.ver[0]      = 0;
-    s_ui.joined      = false;
-    open_combo(s_cfg.uart * 2 + s_cfg.swap);
-    set_status(scan ? "LOOKING FOR THE MODULE..." : "ASKING THE MODULE...");
+    s_ui.scan_n     = deep ? N_PAIRS : QUICK_N;
+    s_ui.pairs_left = s_ui.scan_n;
+    s_ui.attempts   = deep ? 1 : 2;
+    s_ui.attempt    = 0;
+    s_ui.mode       = -1;
+    s_ui.ver[0]     = 0;
+    s_ui.joined     = false;
+    s_ui.pair       = pair_index(s_cfg.tx, s_cfg.rx);
+    if (s_ui.pair >= s_ui.scan_n) s_ui.pair = 0;
+    open_pair();
+    set_status(deep ? "DEEP SCAN: TRYING EVERY PIN PAIR..." : "LOOKING FOR THE MODULE...");
     probe_send();
 }
 
@@ -258,22 +309,29 @@ static void on_done(lora_rc_t rc, const char *reply, int tag, void *user)
     case T_PROBE:
         if (rc == LORA_OK) {
             s_ui.phase = PH_ONLINE;
-            s_cfg.uart = combo_uart(s_ui.combo);
-            s_cfg.swap = combo_swap(s_ui.combo);
-            hal_cfg_set_i32("lr_uart", s_cfg.uart);
-            hal_cfg_set_i32("lr_swap", s_cfg.swap);
+            s_cfg.tx = s_pairs[s_ui.pair].tx;
+            s_cfg.rx = s_pairs[s_ui.pair].rx;
+            hal_cfg_set_i32("lr_tx", s_cfg.tx);
+            hal_cfg_set_i32("lr_rx", s_cfg.rx);
             set_status("MODULE ONLINE");
             cmd("AT+VER=?", 800, 0, T_VER);
             cmd("AT+NWM=?", 800, 0, T_NWM);
-        } else if (++s_ui.attempt < 2) {
+        } else if (++s_ui.attempt < s_ui.attempts) {
             probe_send();
-        } else if (--s_ui.combos_left > 0) {
+        } else if (--s_ui.pairs_left > 0) {
             s_ui.attempt = 0;
-            open_combo((s_ui.combo + 1) & 3);
+            s_ui.pair    = (s_ui.pair + 1) % s_ui.scan_n;
+            open_pair();
+            if (s_ui.scan_n == N_PAIRS) {
+                char m[48];
+                snprintf(m, sizeof(m), "DEEP SCAN %d/%d", N_PAIRS - s_ui.pairs_left + 1, N_PAIRS);
+                set_status(m);
+            }
             probe_send();
         } else {
             s_ui.phase = PH_FAIL;
-            set_status("NO ANSWER: CHECK 5 V, DIP SWITCHES AND THE ANTENNA");
+            set_status(s_ui.scan_n == N_PAIRS ? "NO ANSWER ON ANY PAIR: CHECK THE DIP SWITCHES AND THE MODULE POWER"
+                                              : "NO ANSWER: TRY DEEP SCAN, CHECK THE DIP SWITCHES");
         }
         break;
     case T_VER:
@@ -455,7 +513,7 @@ static void render_link(void)
     lv_obj_set_style_text_color(s_ui.v_state, sc, 0);
     lv_label_set_text(s_ui.v_fw, s_ui.ver[0] ? s_ui.ver : "-");
     lv_label_set_text(s_ui.v_mode, s_ui.mode == 0 ? "LORA P2P" : s_ui.mode == 1 ? (s_ui.joined ? "LORAWAN  JOINED" : "LORAWAN  NOT JOINED") : "-");
-    lv_label_set_text(s_ui.v_pins, hal_mbus_uart_describe(combo_uart(s_ui.combo) ? HAL_MBUS_UART0 : HAL_MBUS_UART1, combo_swap(s_ui.combo) != 0));
+    lv_label_set_text(s_ui.v_pins, hal_mbus_pins_describe(s_pairs[s_ui.pair].tx, s_pairs[s_ui.pair].rx));
     if (s_ui.link) lv_label_set_text_fmt(s_ui.v_bytes, "%u BYTES HEARD", (unsigned)lora_link_rx_bytes(s_ui.link));
 }
 
@@ -602,21 +660,8 @@ static void do_wan_config(void)
 
 /* ---- Widget callbacks --------------------------------------------------------------------- */
 
-static void btn_probe(lv_event_t *e) { (void)e; probe_begin(true); }
-
-static void btn_uart(lv_event_t *e)
-{
-    (void)e;
-    s_cfg.uart ^= 1;
-    probe_begin(false);
-}
-
-static void btn_swap(lv_event_t *e)
-{
-    (void)e;
-    s_cfg.swap ^= 1;
-    probe_begin(false);
-}
+static void btn_probe(lv_event_t *e) { (void)e; probe_begin(false); }
+static void btn_deep(lv_event_t *e) { (void)e; probe_begin(true); }
 
 static void btn_reset(lv_event_t *e)
 {
@@ -788,8 +833,7 @@ static void build_link(lv_obj_t *page)
     lv_obj_set_style_pad_column(row, 10, 0);
     lv_obj_set_style_pad_row(row, 10, 0);
     small_button(row, "FIND MODULE", btn_probe, 0);
-    small_button(row, "UART 15/16 <> 13/14", btn_uart, 0);
-    small_button(row, "SWAP RX/TX", btn_swap, 0);
+    small_button(row, "DEEP SCAN", btn_deep, 0);
     small_button(row, "RESET", btn_reset, 0);
     deck_label(left, g_font.mono_s, g_pal.dim, "WORK MODE (THE MODULE RESTARTS)");
     lv_obj_t *mrow = deck_box(left);
@@ -802,12 +846,13 @@ static void build_link(lv_obj_t *page)
     deck_section(right, "WIRING");
     lv_obj_t *t = deck_label(right, g_font.mono_m, g_pal.text,
                              "M5-Bus 5 V comes on with this module.\n"
-                             "The module's DIP switches pick which\n"
-                             "bus pins carry its RX, TX and RST:\n"
-                             "  TX/RX on pins 15/16 or 13/14\n"
-                             "  RST on pin 8 (not 22: that is audio)\n"
-                             "If nothing answers, FIND MODULE tries\n"
-                             "both pairs, straight and swapped.\n"
+                             "The DIP switches pick the bus pins:\n"
+                             "  module RX: pin 2, 13, 15 or 26\n"
+                             "  module TX: pin 14, 16, 21, 23, 24\n"
+                             "  RST: pin 8 (22 is shared with audio)\n"
+                             "FIND MODULE tries the usual pairs;\n"
+                             "DEEP SCAN tries all 40 (about 30 s)\n"
+                             "and the answer is remembered.\n"
                              "\n"
                              "EU868 is shared: P2P sends are held to\n"
                              "the duty cycle of the sub-band, 14 dBm.\n"
@@ -965,6 +1010,7 @@ static bool start(deck_app_t *self, lv_obj_t *parent)
     (void)self;
     memset(&s_ui, 0, sizeof(s_ui));
     s_ui.mode = -1;
+    pairs_init();
     cfg_load();
     if (!s_duty_ready) {
         lora_duty_init(&s_duty, FREQS[s_cfg.freq].duty_ms);
@@ -1019,7 +1065,7 @@ static bool start(deck_app_t *self, lv_obj_t *parent)
     s_ui.link  = lora_link_new(&io, on_evt, NULL);
     s_ui.timer = lv_timer_create(tick, 20, NULL);
     set_tab(TAB_LINK);
-    probe_begin(true);
+    probe_begin(false);
     return true;
 }
 
@@ -1044,7 +1090,7 @@ static bool on_key(deck_app_t *self, const deck_key_t *k)
         return true;
     }
     if (k->code == HID_P) {
-        probe_begin(true);
+        probe_begin(false);
         return true;
     }
     return false;

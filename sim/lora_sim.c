@@ -1,7 +1,7 @@
 /*
  * Simulator side of deck_hal's M5-Bus serial: a pretend RAK3172 running RUI3
- * AT firmware, wired on UART1 without swap (any other combination stays
- * silent, so the probe's cycling can be seen). Enough of the AT set to drive
+ * AT firmware, wired to TX G6 / RX G7 (any other pair stays silent,
+ * so the probe's cycling can be seen). Enough of the AT set to drive
  * the LORA module: P2P chat, OTAA join, uplink and a canned downlink.
  */
 #include "deck_hal.h"
@@ -178,13 +178,13 @@ static void run_cmd(char *c)
 
 bool hal_mbus_power(bool on) { printf("[sim] M5-Bus 5V %s\n", on ? "on" : "off"); return true; }
 
-bool hal_mbus_uart_open(hal_mbus_uart_t which, bool swap, uint32_t baud)
+bool hal_mbus_uart_open(int tx_gpio, int rx_gpio, uint32_t baud)
 {
     s_open  = true;
-    s_wired = which == HAL_MBUS_UART1 && !swap;
+    s_wired = tx_gpio == 6 && rx_gpio == 7; /* the fake module's TX is on bus pin 15 and its RX on pin 16 */
     memset(s_out, 0, sizeof(s_out));
     s_cur_len = s_cur_off = s_cmd_len = 0;
-    printf("[sim] M5-Bus UART open: %s @ %u (the fake module %s)\n", hal_mbus_uart_describe(which, swap), (unsigned)baud, s_wired ? "answers here" : "is not on this pair");
+    printf("[sim] M5-Bus UART open: %s @ %u (the fake module %s)\n", hal_mbus_pins_describe(tx_gpio, rx_gpio), (unsigned)baud, s_wired ? "answers here" : "is not on this pair");
     return true;
 }
 void hal_mbus_uart_close(void) { s_open = false; }
@@ -192,12 +192,10 @@ bool hal_mbus_uart_is_open(void) { return s_open; }
 void hal_mbus_uart_flush(void) { memset(s_out, 0, sizeof(s_out)); s_cur_len = s_cur_off = 0; }
 void hal_mbus_reset_pulse(void) { if (s_wired) { s_precv = 0; s_joined = false; banner(200); } }
 
-const char *hal_mbus_uart_describe(hal_mbus_uart_t which, bool swap)
+const char *hal_mbus_pins_describe(int tx_gpio, int rx_gpio)
 {
     static char b[48];
-    int rx = which == HAL_MBUS_UART0 ? 38 : 7, tx = which == HAL_MBUS_UART0 ? 37 : 6;
-    if (swap) { int t = rx; rx = tx; tx = t; }
-    snprintf(b, sizeof(b), "RX G%d / TX G%d  (M5-BUS %s)", rx, tx, which == HAL_MBUS_UART0 ? "13/14" : "15/16");
+    snprintf(b, sizeof(b), "TX G%d / RX G%d", tx_gpio, rx_gpio);
     return b;
 }
 

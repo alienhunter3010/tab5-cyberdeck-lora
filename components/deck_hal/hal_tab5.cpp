@@ -492,29 +492,16 @@ bool hal_headphones(void)
 /* ---- M5-Bus serial -------------------------------------------------------- */
 
 static bool s_mbus_open;
-static uart_port_t s_mbus_port;
+static const uart_port_t MBUS_UART = UART_NUM_1;
 
 bool hal_mbus_power(bool on)
 {
     return s_board.ext5v_enable(on) == ESP_OK;
 }
 
-static void mbus_pins(hal_mbus_uart_t which, bool swap, int *rx, int *tx)
-{
-    using namespace m5::tab5;
-    int r = which == HAL_MBUS_UART0 ? (int)M5TAB5_MBUS_UART0_RX : (int)M5TAB5_MBUS_UART1_RX;
-    int t = which == HAL_MBUS_UART0 ? (int)M5TAB5_MBUS_UART0_TX : (int)M5TAB5_MBUS_UART1_TX;
-    *rx   = swap ? t : r;
-    *tx   = swap ? r : t;
-}
-
-bool hal_mbus_uart_open(hal_mbus_uart_t which, bool swap, uint32_t baud)
+bool hal_mbus_uart_open(int tx_gpio, int rx_gpio, uint32_t baud)
 {
     hal_mbus_uart_close();
-    int rx, tx;
-    mbus_pins(which, swap, &rx, &tx);
-    /* Any UART can reach any GPIO; UART_NUM_0 is left alone. */
-    uart_port_t port = which == HAL_MBUS_UART0 ? UART_NUM_2 : UART_NUM_1;
     uart_config_t cfg = {};
     cfg.baud_rate  = (int)baud;
     cfg.data_bits  = UART_DATA_8_BITS;
@@ -522,22 +509,21 @@ bool hal_mbus_uart_open(hal_mbus_uart_t which, bool swap, uint32_t baud)
     cfg.stop_bits  = UART_STOP_BITS_1;
     cfg.flow_ctrl  = UART_HW_FLOWCTRL_DISABLE;
     cfg.source_clk = UART_SCLK_DEFAULT;
-    if (uart_driver_install(port, 2048, 0, 0, nullptr, 0) != ESP_OK) return false;
-    if (uart_param_config(port, &cfg) != ESP_OK ||
-        uart_set_pin(port, tx, rx, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE) != ESP_OK) {
-        uart_driver_delete(port);
+    if (uart_driver_install(MBUS_UART, 2048, 0, 0, nullptr, 0) != ESP_OK) return false;
+    if (uart_param_config(MBUS_UART, &cfg) != ESP_OK ||
+        uart_set_pin(MBUS_UART, tx_gpio, rx_gpio, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE) != ESP_OK) {
+        uart_driver_delete(MBUS_UART);
         return false;
     }
-    s_mbus_port = port;
     s_mbus_open = true;
-    ESP_LOGI(TAG, "M5-Bus UART%d open: RX G%d TX G%d @ %u", (int)port, rx, tx, (unsigned)baud);
+    ESP_LOGI(TAG, "M5-Bus UART open: TX G%d RX G%d @ %u", tx_gpio, rx_gpio, (unsigned)baud);
     return true;
 }
 
 void hal_mbus_uart_close(void)
 {
     if (!s_mbus_open) return;
-    uart_driver_delete(s_mbus_port);
+    uart_driver_delete(MBUS_UART);
     s_mbus_open = false;
 }
 
@@ -546,18 +532,18 @@ bool hal_mbus_uart_is_open(void) { return s_mbus_open; }
 int hal_mbus_uart_read(uint8_t *buf, size_t n)
 {
     if (!s_mbus_open) return 0;
-    return uart_read_bytes(s_mbus_port, buf, (uint32_t)n, 0);
+    return uart_read_bytes(MBUS_UART, buf, (uint32_t)n, 0);
 }
 
 int hal_mbus_uart_write(const uint8_t *buf, size_t n)
 {
     if (!s_mbus_open) return -1;
-    return uart_write_bytes(s_mbus_port, buf, n);
+    return uart_write_bytes(MBUS_UART, buf, n);
 }
 
 void hal_mbus_uart_flush(void)
 {
-    if (s_mbus_open) uart_flush_input(s_mbus_port);
+    if (s_mbus_open) uart_flush_input(MBUS_UART);
 }
 
 void hal_mbus_reset_pulse(void)
@@ -571,12 +557,19 @@ void hal_mbus_reset_pulse(void)
     gpio_set_direction(pin, GPIO_MODE_INPUT);
 }
 
-const char *hal_mbus_uart_describe(hal_mbus_uart_t which, bool swap)
+static int mbus_pin_of(int gpio)
+{
+    static const struct { int g, p; } T[] = {{16, 2},  {17, 4},  {18, 7},  {45, 8},  {19, 9},  {52, 10}, {5, 11},  {38, 13}, {37, 14},
+                                             {7, 15},  {6, 16},  {3, 19},  {4, 20},  {2, 21},  {48, 22}, {47, 23}, {35, 24}, {51, 26}};
+    for (const auto &e : T)
+        if (e.g == gpio) return e.p;
+    return 0;
+}
+
+const char *hal_mbus_pins_describe(int tx_gpio, int rx_gpio)
 {
     static char buf[48];
-    int rx, tx;
-    mbus_pins(which, swap, &rx, &tx);
-    snprintf(buf, sizeof(buf), "RX G%d / TX G%d  (M5-BUS %s)", rx, tx, which == HAL_MBUS_UART0 ? "13/14" : "15/16");
+    snprintf(buf, sizeof(buf), "TX G%d pin%d / RX G%d pin%d", tx_gpio, mbus_pin_of(tx_gpio), rx_gpio, mbus_pin_of(rx_gpio));
     return buf;
 }
 

@@ -25,15 +25,16 @@ int main(void)
     lora_io_t io = {rd, wr, NULL};
     lora_link_t *l = lora_link_new(&io, evt, NULL);
 
-    /* the fake module sits on UART1, straight: the other three pairs are silent */
-    for (int c = 3; c >= 0; c--) {
-        hal_mbus_uart_open((c >> 1) ? HAL_MBUS_UART0 : HAL_MBUS_UART1, c & 1, 115200);
+    /* the fake module answers on TX G6 / RX G7 only */
+    static const int pairs[][2] = {{7, 6}, {37, 38}, {38, 37}, {6, 7}};
+    for (int c = 0; c < 4; c++) {
+        hal_mbus_uart_open(pairs[c][0], pairs[c][1], 115200);
         nrc = 0; lora_link_send(l, "AT", 300, 0, done, 1, NULL); run(l, 400);
-        printf("combo %d (uart%d swap%d): %s\n", c, c >> 1, c & 1, rcs[1] == LORA_OK ? "ANSWERS" : "silent");
-        assert((c == 0) == (rcs[1] == LORA_OK));
+        printf("TX G%d RX G%d: %s\n", pairs[c][0], pairs[c][1], rcs[1] == LORA_OK ? "ANSWERS" : "silent");
+        assert((c == 3) == (rcs[1] == LORA_OK));
     }
 
-    hal_mbus_uart_open(HAL_MBUS_UART1, false, 115200);
+    hal_mbus_uart_open(6, 7, 115200);
     char v[64];
     lora_link_send(l, "AT+VER=?", 500, 0, done, 2, NULL); lora_link_send(l, "AT+NWM=?", 500, 0, done, 3, NULL); run(l, 100);
     assert(lora_reply_value(rep[2], "VER", v, sizeof v) && strstr(v, "RUI_"));
