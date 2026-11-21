@@ -64,7 +64,7 @@ typedef enum { PH_PROBING, PH_ONLINE, PH_FAIL } phase_t;
 typedef struct {
     int kind; /* 0 RX, 1 TX, 2 info, 3 error */
     int rssi, snr;
-    char text[TXT_MAX + 24];
+    char text[TXT_MAX + 72];
 } logrow_t;
 
 typedef struct {
@@ -423,7 +423,7 @@ static void render_log(lv_obj_t *box, const log_t *l)
     }
     for (int i = 0; i < l->n; i++) {
         const logrow_t *r = &l->row[i];
-        char line[TXT_MAX + 64];
+        char line[TXT_MAX + 120];
         lv_color_t col = g_pal.text;
         if (r->kind == 0) {
             snprintf(line, sizeof(line), "RX  %d dBm %+d dB   %s", r->rssi, r->snr, r->text);
